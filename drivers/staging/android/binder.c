@@ -2627,6 +2627,48 @@ static void binder_stat_br(struct binder_proc *proc,
 {
 	trace_binder_return(cmd);
 	if (_IOC_NR(cmd) < ARRAY_SIZE(binder_stats.br)) {
+		atomic_inc(&binder_stats.br[_IOC_NR(cmd)]);
+		atomic_inc(&proc->stats.br[_IOC_NR(cmd)]);
+		atomic_inc(&thread->stats.br[_IOC_NR(cmd)]);
+	}
+}
+
+static int binder_put_node_cmd(struct binder_proc *proc,
+			       struct binder_thread *thread,
+			       void __user **ptrp,
+			       binder_uintptr_t node_ptr,
+			       binder_uintptr_t node_cookie,
+			       int node_debug_id,
+			       uint32_t cmd, const char *cmd_name)
+{
+	void __user *ptr = *ptrp;
+
+	if (put_user(cmd, (uint32_t __user *)ptr))
+		return -EFAULT;
+	ptr += sizeof(uint32_t);
+
+	if (put_user(node_ptr, (binder_uintptr_t __user *)ptr))
+		return -EFAULT;
+	ptr += sizeof(binder_uintptr_t);
+
+	if (put_user(node_cookie, (binder_uintptr_t __user *)ptr))
+		return -EFAULT;
+	ptr += sizeof(binder_uintptr_t);
+
+	binder_stat_br(proc, thread, cmd);
+	binder_debug(BINDER_DEBUG_USER_REFS, "%d:%d %s %d u%016llx c%016llx\n",
+		     proc->pid, thread->pid, cmd_name, node_debug_id,
+		     (u64)node_ptr, (u64)node_cookie);
+
+	*ptrp = ptr;
+	return 0;
+}
+
+static void binder_stat_br(struct binder_proc *proc,
+			   struct binder_thread *thread, uint32_t cmd)
+{
+	trace_binder_return(cmd);
+	if (_IOC_NR(cmd) < ARRAY_SIZE(binder_stats.br)) {
 		binder_stats.br[_IOC_NR(cmd)]++;
 		proc->stats.br[_IOC_NR(cmd)]++;
 		thread->stats.br[_IOC_NR(cmd)]++;
@@ -3113,6 +3155,10 @@ static unsigned int binder_poll(struct file *filp,
 		list_empty(&thread->todo) && thread->return_error == BR_OK;
 
 	binder_unlock(__func__);
+	poll_wait(filp, &thread->wait, wait);
+
+	if (binder_has_work(thread, wait_for_proc_work))
+		return POLLIN;
 
 	if (wait_for_proc_work) {
 		if (binder_has_proc_work(proc, thread))
